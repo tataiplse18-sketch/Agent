@@ -1,0 +1,71 @@
+// AgentForge — Autonomous Multi-Agent AI Software Engineering SaaS Platform
+// Prisma Schema with SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  goal        String?
+  status      String   @default("pending") // pending/planning/coding/testing/reviewing/completed/failed
+  techStack   String?  // Comma-separated tech stack e.g. "nextjs,typescript,tailwind"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks         Task[]
+  agentMessages AgentMessage[]
+  codeFiles     CodeFile[]
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  projectId   String
+  title       String
+  description String?
+  agentType   String   @default("orchestrator") // orchestrator/planner/coder/qa/git
+  status      String   @default("pending")       // pending/running/completed/failed
+  output      String?  // Optional output text from the agent
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model AgentMessage {
+  id        String   @id @default(cuid())
+  projectId String
+  agentType String   // orchestrator/planner/coder/qa/git/system
+  role      String   // system/user/assistant
+  content   String
+  metadata  String?  // Optional JSON string for additional data
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model CodeFile {
+  id        String   @id @default(cuid())
+  projectId String
+  path      String   // File path relative to project root e.g. "src/app/page.tsx"
+  content   String   // Full file content
+  language  String   // e.g. "typescript", "css", "html", "json"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
