@@ -35,3 +35,31 @@ Work Log:
 Stage Summary:
 - ✅ All 83 files pushed to GitHub repo
 - ✅ Remote configured and branch tracking set up
+
+---
+Task ID: 3
+Agent: Main Agent (Super Z)
+Task: Stage 2 — Agent Prompts + Orchestrator (Brain of the Platform)
+
+Work Log:
+- Created src/lib/agent-prompts.ts with 5 specialized agent system prompts:
+  - Orchestrator: Breaks project goal into task list (JSON output with project name, tech stack, tasks)
+  - Planner: Creates detailed implementation plans with architecture, file structure, data models, API endpoints
+  - Coder: Generates production-quality code as JSON array of files
+  - QA: Reviews code with scoring, issues, suggestions, and test cases (JSON output)
+  - Git: Creates semantic branch names, commit messages, PR descriptions (JSON output)
+- Created src/lib/agent-orchestrator.ts with AgentOrchestrator class:
+  - Full pipeline: Orchestrator → Planner → Coder → QA → Git
+  - Resilient: task failures don't stop the pipeline (try/catch + continue)
+  - Contextual: buildTaskContext() gives each agent info about previous work
+  - Coder response parsing with CodeFile upsert to DB
+  - Temperature tuning: 0.3 for coder (deterministic), 0.7 for others (creative)
+  - Robust JSON parsing: handles direct JSON, markdown-wrapped JSON, and bracket extraction
+  - All conversations saved to AgentMessage table
+- ESLint check passed clean
+- Committed and pushed to GitHub (commit f8d4e41)
+
+Stage Summary:
+- ✅ src/lib/agent-prompts.ts — 5 agent prompts with strict JSON output formats
+- ✅ src/lib/agent-orchestrator.ts — Full pipeline orchestrator with error resilience
+- ✅ Pushed to GitHub successfully
