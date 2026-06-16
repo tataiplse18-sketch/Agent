@@ -1,0 +1,66 @@
+# ============================================================
+# AgentForge — Docker Ignore
+# ============================================================
+# Exclude files that shouldn't be in the Docker build context
+# to keep images small and builds fast.
+# ============================================================
+
+# Dependencies (installed inside container)
+node_modules
+
+# Next.js build output (rebuilt inside container)
+.next
+out
+
+# Debug & logs
+*.log
+npm-debug.log*
+dev.log
+server.log
+
+# Environment files (use docker-compose env vars instead)
+.env
+.env.*
+!.env.example
+
+# IDE & editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Docker files (prevent recursion)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation (not needed in container)
+README.md
+LICENSE
+
+# Skills & config
+/skills/
+.claude
+.z-ai-config
+
+# Upload & download dirs
+/upload/
+/download/
+
+# Test & examples
+/test/
+/examples/
+
+# Misc
+coverage
+.vercel
+*.pem
+*.tsbuildinfo
