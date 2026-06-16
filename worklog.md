@@ -63,3 +63,39 @@ Stage Summary:
 - ✅ src/lib/agent-prompts.ts — 5 agent prompts with strict JSON output formats
 - ✅ src/lib/agent-orchestrator.ts — Full pipeline orchestrator with error resilience
 - ✅ Pushed to GitHub successfully
+
+---
+Task ID: 4
+Agent: Main Agent (Super Z)
+Task: Stage 3 — API Routes + WebSocket Service + Zustand Store
+
+Work Log:
+- Created src/app/api/projects/route.ts (POST create + GET list with task counts)
+- Created src/app/api/projects/[id]/route.ts (GET single project with all relations)
+- Created src/app/api/projects/[id]/start/route.ts (POST start pipeline in BACKGROUND — non-blocking)
+- Created mini-services/ws-service/package.json and index.ts:
+  - Socket.io server on port 3003 with project rooms
+  - HTTP /broadcast endpoint for orchestrator → WS bridge
+  - Health check endpoint at /health
+  - Events: agent:message, task:update, project:status
+- Created src/lib/store.ts (Zustand store):
+  - Project list, current project, UI states
+  - Live WebSocket updates: messages, task updates, project status
+  - Auto-updates currentProject when live events arrive
+  - isPipelineRunning auto-managed from project status events
+- Updated src/lib/agent-orchestrator.ts with WebSocket real-time events:
+  - Added broadcastEvent() helper (HTTP POST to WS /broadcast)
+  - Added emitAgentMessage(), emitTaskUpdate(), emitProjectStatus() methods
+  - Events emitted at every pipeline milestone
+  - Graceful fallback — pipeline works even if WS service is down
+- Installed ws-service dependencies (socket.io, cors)
+- ESLint check passed clean
+- Committed and pushed to GitHub (commit 7389765)
+
+Stage Summary:
+- ✅ 3 API routes (create, list, get, start pipeline)
+- ✅ WebSocket mini-service with HTTP bridge for orchestrator
+- ✅ Zustand store with live update support
+- ✅ Orchestrator now emits real-time events
+- ✅ 8 files changed, 837 insertions
+- ✅ Pushed to GitHub successfully
