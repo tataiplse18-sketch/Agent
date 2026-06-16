@@ -9,12 +9,41 @@
  * - Contextual: Each agent receives context from previous agents
  * - Observable: Every step is logged and saved to the database
  * - Deterministic: Coder uses lower temperature for consistent output
+ * - Real-time: WebSocket events broadcast pipeline progress to UI
  */
 
 import { db } from '@/lib/db'
 import { callGLM, type GLMMessage } from '@/lib/glm-client'
 import { AGENT_PROMPTS } from '@/lib/agent-prompts'
 import type { AgentType, ProjectStatus } from '@/types'
+
+// ============================================================
+// WebSocket Broadcast Helper
+// ============================================================
+
+/**
+ * Broadcasts a real-time event to the WebSocket service.
+ *
+ * The orchestrator runs on the server side (in API routes), so it can
+ * make HTTP requests to the WebSocket mini-service on port 3003.
+ * The WS service then fans out the event to all subscribed clients.
+ *
+ * This approach keeps the orchestrator decoupled from socket.io —
+ * it just fires-and-forgets HTTP POST requests.
+ */
+async function broadcastEvent(event: string, data: Record<string, unknown>): Promise<void> {
+  try {
+    const WS_PORT = 3003
+    await fetch(`http://localhost:${WS_PORT}/broadcast`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, data }),
+    })
+  } catch {
+    // WebSocket service may not be running — that's OK, don't crash the pipeline
+    // This is a non-critical feature; the pipeline works without real-time updates
+  }
+}
 
 // ============================================================
 // Types
@@ -76,6 +105,38 @@ export class AgentOrchestrator {
   }
 
   // ============================================================
+  // Real-time Event Helpers
+  // ============================================================
+
+  /** Emit an agent:message event to the WebSocket service */
+  private emitAgentMessage(agentType: string, content: string, role: string = 'assistant'): void {
+    broadcastEvent('agent:message', {
+      projectId: this.projectId,
+      agentType,
+      content: content.length > 2000 ? content.substring(0, 2000) + '...[truncated]' : content,
+      metadata: { role },
+    })
+  }
+
+  /** Emit a task:update event to the WebSocket service */
+  private emitTaskUpdate(taskId: string, status: string, output?: string): void {
+    broadcastEvent('task:update', {
+      projectId: this.projectId,
+      taskId,
+      status,
+      output: output ? (output.length > 500 ? output.substring(0, 500) + '...' : output) : undefined,
+    })
+  }
+
+  /** Emit a project:status event to the WebSocket service */
+  private emitProjectStatus(status: string): void {
+    broadcastEvent('project:status', {
+      projectId: this.projectId,
+      status,
+    })
+  }
+
+  // ============================================================
   // Main Pipeline Entry Point
   // ============================================================
 
@@ -111,6 +172,7 @@ export class AgentOrchestrator {
     try {
       // Step 2: Update project status to "planning"
       await this.updateProjectStatus('planning')
+      this.emitProjectStatus('planning')
 
       // Step 3: Call ORCHESTRATOR agent
       console.log(`\n🧠 [Orchestrator] Calling ORCHESTRATOR agent...`)
@@ -143,6 +205,7 @@ export class AgentOrchestrator {
 
       // Save orchestrator response as agent message
       await this.saveAgentMessage('orchestrator', 'assistant', JSON.stringify(plan))
+      this.emitAgentMessage('orchestrator', JSON.stringify(plan))
 
       // Step 6: Create tasks in DB from the plan
       if (plan.tasks && Array.isArray(plan.tasks)) {
@@ -178,11 +241,13 @@ export class AgentOrchestrator {
 
       // Step 9: Mark project as completed
       await this.updateProjectStatus('completed')
+      this.emitProjectStatus('completed')
       console.log(`\n🎉 [Orchestrator] Pipeline completed for project: ${this.projectId}`)
 
     } catch (error) {
       console.error(`❌ [Orchestrator] Pipeline error:`, error)
       await this.updateProjectStatus('failed')
+      this.emitProjectStatus('failed')
       throw error
     }
   }
@@ -202,6 +267,7 @@ export class AgentOrchestrator {
         where: { id: taskId },
         data: { status: 'running' },
       })
+      this.emitTaskUpdate(taskId, 'running')
 
       // Update project status based on agent type
       const projectStatusMap: Record<string, ProjectStatus> = {
@@ -212,6 +278,7 @@ export class AgentOrchestrator {
         orchestrator: 'planning',
       }
       await this.updateProjectStatus(projectStatusMap[agentType] || 'planning')
+      this.emitProjectStatus(projectStatusMap[agentType] || 'planning')
 
       // Build context from previous tasks
       const context = await this.buildTaskContext(taskId)
@@ -226,6 +293,7 @@ export class AgentOrchestrator {
 
       // Save the user prompt as an agent message
       await this.saveAgentMessage(agentType, 'user', userMessage)
+      this.emitAgentMessage(agentType, userMessage, 'user')
 
       // Call the agent
       const response = await this.callAgent(agentType, userMessage, temperature)
@@ -237,6 +305,7 @@ export class AgentOrchestrator {
 
       // Save the agent response
       await this.saveAgentMessage(agentType, 'assistant', response || 'No response')
+      this.emitAgentMessage(agentType, response || 'No response', 'assistant')
 
       // Save task output and mark as completed
       await db.task.update({
@@ -246,6 +315,7 @@ export class AgentOrchestrator {
           output: response,
         },
       })
+      this.emitTaskUpdate(taskId, 'completed', response || undefined)
 
       console.log(`✅ [Orchestrator] Task completed: "${taskDescription.substring(0, 50)}..."`)
 
@@ -259,6 +329,7 @@ export class AgentOrchestrator {
           output: error instanceof Error ? error.message : 'Unknown error occurred',
         },
       })
+      this.emitTaskUpdate(taskId, 'failed', error instanceof Error ? error.message : 'Unknown error')
     }
   }
 
