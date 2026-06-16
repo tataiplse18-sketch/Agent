@@ -15,35 +15,8 @@
 import { db } from '@/lib/db'
 import { callGLM, type GLMMessage } from '@/lib/glm-client'
 import { AGENT_PROMPTS } from '@/lib/agent-prompts'
+import { broadcastAgentMessage, broadcastTaskUpdate, broadcastProjectStatus } from '@/lib/broadcast'
 import type { AgentType, ProjectStatus } from '@/types'
-
-// ============================================================
-// WebSocket Broadcast Helper
-// ============================================================
-
-/**
- * Broadcasts a real-time event to the WebSocket service.
- *
- * The orchestrator runs on the server side (in API routes), so it can
- * make HTTP requests to the WebSocket mini-service on port 3003.
- * The WS service then fans out the event to all subscribed clients.
- *
- * This approach keeps the orchestrator decoupled from socket.io —
- * it just fires-and-forgets HTTP POST requests.
- */
-async function broadcastEvent(event: string, data: Record<string, unknown>): Promise<void> {
-  try {
-    const WS_PORT = 3003
-    await fetch(`http://localhost:${WS_PORT}/broadcast`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event, data }),
-    })
-  } catch {
-    // WebSocket service may not be running — that's OK, don't crash the pipeline
-    // This is a non-critical feature; the pipeline works without real-time updates
-  }
-}
 
 // ============================================================
 // Types
@@ -110,30 +83,17 @@ export class AgentOrchestrator {
 
   /** Emit an agent:message event to the WebSocket service */
   private emitAgentMessage(agentType: string, content: string, role: string = 'assistant'): void {
-    broadcastEvent('agent:message', {
-      projectId: this.projectId,
-      agentType,
-      content: content.length > 2000 ? content.substring(0, 2000) + '...[truncated]' : content,
-      metadata: { role },
-    })
+    broadcastAgentMessage(this.projectId, agentType, content, role)
   }
 
   /** Emit a task:update event to the WebSocket service */
   private emitTaskUpdate(taskId: string, status: string, output?: string): void {
-    broadcastEvent('task:update', {
-      projectId: this.projectId,
-      taskId,
-      status,
-      output: output ? (output.length > 500 ? output.substring(0, 500) + '...' : output) : undefined,
-    })
+    broadcastTaskUpdate(this.projectId, taskId, status, output)
   }
 
   /** Emit a project:status event to the WebSocket service */
   private emitProjectStatus(status: string): void {
-    broadcastEvent('project:status', {
-      projectId: this.projectId,
-      status,
-    })
+    broadcastProjectStatus(this.projectId, status)
   }
 
   // ============================================================
@@ -568,48 +528,66 @@ export class AgentOrchestrator {
   // ============================================================
 
   /**
-   * Parses JSON from an agent response. Handles:
-   * - Direct JSON strings
-   * - JSON wrapped in markdown code blocks (```json ... ```)
-   * - JSON with leading/trailing whitespace
+   * Parses JSON from an agent response. Handles all 5 common cases:
+   * 1. Direct JSON object/array
+   * 2. JSON wrapped in ```json ... ``` markdown code blocks
+   * 3. JSON wrapped in ``` ... ``` (no language tag)
+   * 4. Response with text before/after JSON (finds first { or [)
+   * 5. If ALL parsing fails → returns null (caller saves raw text, doesn't crash)
    */
   private parseAgentResponse<T>(response: string | null): T | null {
     if (!response) return null
 
+    const trimmed = response.trim()
+
     // Attempt 1: Direct JSON parse
     try {
-      return JSON.parse(response.trim()) as T
+      return JSON.parse(trimmed) as T
     } catch {
       // Continue to next method
     }
 
-    // Attempt 2: Extract JSON from markdown code blocks
-    const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/)
-    if (codeBlockMatch) {
+    // Attempt 2: Extract JSON from ```json ... ``` code blocks
+    const jsonBlockMatch = trimmed.match(/```json\s*\n?([\s\S]*?)\n?\s*```/)
+    if (jsonBlockMatch) {
       try {
-        return JSON.parse(codeBlockMatch[1].trim()) as T
+        return JSON.parse(jsonBlockMatch[1].trim()) as T
       } catch {
         // Continue to next method
       }
     }
 
-    // Attempt 3: Find the first '{' or '[' and try to parse from there
-    const jsonStart = response.search(/[{[]/)
+    // Attempt 3: Extract JSON from ``` ... ``` code blocks (no language tag)
+    const genericBlockMatch = trimmed.match(/```\s*\n?([\s\S]*?)\n?\s*```/)
+    if (genericBlockMatch) {
+      try {
+        const content = genericBlockMatch[1].trim()
+        // Only try if it looks like JSON
+        if (content.startsWith('{') || content.startsWith('[')) {
+          return JSON.parse(content) as T
+        }
+      } catch {
+        // Continue to next method
+      }
+    }
+
+    // Attempt 4: Find the first '{' or '[' and try to parse from there
+    const jsonStart = trimmed.search(/[{[]/)
     if (jsonStart !== -1) {
       try {
-        const jsonStr = response.substring(jsonStart)
+        const jsonStr = trimmed.substring(jsonStart)
         return JSON.parse(jsonStr) as T
       } catch {
-        // Try to find the matching closing bracket
+        // Try to find the matching closing bracket for balanced extraction
         try {
-          const openChar = response[jsonStart]
+          const openChar = trimmed[jsonStart]
           const closeChar = openChar === '{' ? '}' : ']'
           let depth = 0
           let endIdx = -1
 
-          for (let i = jsonStart; i < response.length; i++) {
-            if (response[i] === openChar) depth++
-            if (response[i] === closeChar) depth--
+          for (let i = jsonStart; i < trimmed.length; i++) {
+            if (trimmed[i] === openChar) depth++
+            if (trimmed[i] === closeChar) depth--
             if (depth === 0) {
               endIdx = i
               break
@@ -617,16 +595,18 @@ export class AgentOrchestrator {
           }
 
           if (endIdx !== -1) {
-            const extracted = response.substring(jsonStart, endIdx + 1)
+            const extracted = trimmed.substring(jsonStart, endIdx + 1)
             return JSON.parse(extracted) as T
           }
         } catch {
-          // Give up
+          // All bracket-based parsing failed
         }
       }
     }
 
-    console.warn(`⚠️ [Orchestrator] Could not parse JSON from agent response`)
+    // Attempt 5: All parsing failed — return null
+    // The caller will save the raw text as output and won't crash
+    console.warn(`⚠️ [Orchestrator] Could not parse JSON from agent response (first 200 chars: "${trimmed.substring(0, 200)}...")`)
     return null
   }
 

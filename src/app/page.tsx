@@ -9,19 +9,19 @@
  * VIEW 3: Project selected → Detail view (tasks, agent log, code)
  *
  * Features:
- * - WebSocket real-time updates (agent:message, task:update, project:status)
- * - Auto-refresh project data during pipeline execution
+ * - WebSocket real-time updates via useWebSocket hook (auto-reconnect)
+ * - Polling fallback: auto-refresh project data every 5s during pipeline
  * - Dark theme with emerald-500 accent
  * - Fully responsive
  */
 
 import { useEffect, useCallback, useRef } from 'react'
-import { io, Socket } from 'socket.io-client'
-import { Cpu, ArrowLeft, Plus, Sparkles, Loader2 } from 'lucide-react'
+import { Cpu, ArrowLeft, Plus, Sparkles, Loader2, Wifi, WifiOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAppStore } from '@/lib/store'
+import { useWebSocket, type ConnectionStatus } from '@/lib/useWebSocket'
 import ProjectForm from '@/components/ProjectForm'
 import ProjectCard from '@/components/ProjectCard'
 import TaskList from '@/components/TaskList'
@@ -43,6 +43,30 @@ const statusBadge: Record<string, { label: string; className: string }> = {
 }
 
 // ============================================================
+// Connection Status Indicator
+// ============================================================
+
+function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
+  if (status === 'connected') return null
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      {status === 'reconnecting' ? (
+        <>
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-yellow-500" />
+          <span className="text-yellow-500">Reconnecting...</span>
+        </>
+      ) : (
+        <>
+          <WifiOff className="h-3.5 w-3.5 text-zinc-500" />
+          <span className="text-zinc-500">Offline</span>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ============================================================
 // Page Component
 // ============================================================
 
@@ -56,15 +80,13 @@ export default function Home() {
     setCurrentProject,
     setIsLoading,
     setIsPipelineRunning,
-    addLiveMessage,
-    addLiveTaskUpdate,
-    addLiveProjectStatus,
     clearLiveUpdates,
-    updateProjectInList,
   } = useAppStore()
 
-  const socketRef = useRef<Socket | null>(null)
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // WebSocket connection via custom hook
+  const { status: wsStatus } = useWebSocket(currentProject?.id || null)
 
   // ============================================================
   // Load Projects on Mount
@@ -113,14 +135,22 @@ export default function Home() {
   }, [currentProject?.id, loadProjectDetail])
 
   // ============================================================
-  // Auto-Refresh During Pipeline
+  // Polling Fallback — Auto-Refresh During Pipeline
   // ============================================================
 
   useEffect(() => {
-    if (isPipelineRunning && currentProject?.id) {
-      // Refresh project detail every 5 seconds during pipeline
+    // Poll when pipeline is running OR when WebSocket is disconnected
+    const shouldPoll =
+      (isPipelineRunning && currentProject?.id) ||
+      (wsStatus === 'disconnected' && currentProject?.id &&
+       currentProject.status !== 'completed' && currentProject.status !== 'failed' &&
+       currentProject.status !== 'pending')
+
+    if (shouldPoll) {
       refreshIntervalRef.current = setInterval(() => {
-        loadProjectDetail(currentProject.id)
+        if (currentProject?.id) {
+          loadProjectDetail(currentProject.id)
+        }
       }, 5000)
     }
 
@@ -130,55 +160,7 @@ export default function Home() {
         refreshIntervalRef.current = null
       }
     }
-  }, [isPipelineRunning, currentProject?.id, loadProjectDetail])
-
-  // ============================================================
-  // WebSocket Connection
-  // ============================================================
-
-  useEffect(() => {
-    if (!currentProject?.id) return
-
-    // Connect to WebSocket service
-    const socket = io('/?XTransformPort=3003', {
-      transports: ['websocket', 'polling'],
-    })
-    socketRef.current = socket
-
-    socket.on('connect', () => {
-      console.log('[WS] Connected:', socket.id)
-      // Join the project room
-      socket.emit('project:join', { projectId: currentProject.id })
-    })
-
-    // Listen for real-time events
-    socket.on('agent:message', (data) => {
-      addLiveMessage(data)
-    })
-
-    socket.on('task:update', (data) => {
-      addLiveTaskUpdate(data)
-    })
-
-    socket.on('project:status', (data) => {
-      addLiveProjectStatus(data)
-      if (['completed', 'failed'].includes(data.status)) {
-        setIsPipelineRunning(false)
-        // Final refresh
-        loadProjectDetail(data.projectId)
-      }
-    })
-
-    socket.on('disconnect', () => {
-      console.log('[WS] Disconnected')
-    })
-
-    return () => {
-      socket.emit('project:leave', { projectId: currentProject.id })
-      socket.disconnect()
-      socketRef.current = null
-    }
-  }, [currentProject?.id, addLiveMessage, addLiveTaskUpdate, addLiveProjectStatus, setIsPipelineRunning, loadProjectDetail])
+  }, [isPipelineRunning, currentProject?.id, currentProject?.status, wsStatus, loadProjectDetail])
 
   // ============================================================
   // Navigation Handlers
@@ -186,6 +168,10 @@ export default function Home() {
 
   const handleSelectProject = (project: typeof projects[0]) => {
     setCurrentProject(project)
+    // If project is in an active state, mark pipeline as running
+    if (['planning', 'coding', 'testing', 'reviewing'].includes(project.status)) {
+      setIsPipelineRunning(true)
+    }
     clearLiveUpdates()
   }
 
@@ -193,7 +179,6 @@ export default function Home() {
     setCurrentProject(null)
     clearLiveUpdates()
     setIsPipelineRunning(false)
-    // Reload project list to reflect changes
     loadProjects()
   }
 
@@ -251,17 +236,30 @@ export default function Home() {
             )}
           </div>
 
-          {!isDetailView && hasProjects && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleNewProject}
-              className="border-zinc-700 text-zinc-300 hover:text-white hover:border-emerald-500/50"
-            >
-              <Plus className="h-4 w-4 mr-1" />
-              New Project
-            </Button>
-          )}
+          <div className="flex items-center gap-3">
+            {/* Connection Status Indicator */}
+            {isDetailView && <ConnectionIndicator status={wsStatus} />}
+
+            {/* WS Connected indicator */}
+            {isDetailView && wsStatus === 'connected' && (
+              <div className="flex items-center gap-1 text-xs text-emerald-500">
+                <Wifi className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Live</span>
+              </div>
+            )}
+
+            {!isDetailView && hasProjects && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleNewProject}
+                className="border-zinc-700 text-zinc-300 hover:text-white hover:border-emerald-500/50"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                New Project
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 

@@ -10,7 +10,9 @@
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "db:studio": "prisma studio",
+    "ws:start": "cd mini-services/ws-service && bun run dev"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
